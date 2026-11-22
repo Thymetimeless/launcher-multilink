@@ -1,6 +1,6 @@
 @echo off
 setlocal
-call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1 || exit /b 1
+call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1 || (echo ERROR: Visual Studio 2022 vcvars64.bat not found. Edit the path on line 3 of build.bat. & exit /b 1)
 cd /d "%~dp0"
 if not exist obj mkdir obj
 set CF=/nologo /std:c++20 /O2 /MT /EHsc /W4 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /Foobj\
