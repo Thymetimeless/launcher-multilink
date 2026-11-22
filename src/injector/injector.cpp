@@ -81,63 +81,94 @@ bool Inject(DWORD pid, const std::wstring& dll) {
     return ok;
 }
 
-}  // namespace
-
-// Usage: multilink_inject.exe [profile]   (profile = a section of multilink.ini, default "hoyoplay")
-int wmain(int argc, wchar_t** argv) {
-    const std::wstring dir = ExeDir();
-    const std::wstring dll = dir + L"multilink.dll";
-    const std::wstring ini = dir + L"multilink.ini";
-    const std::wstring profile = argc > 1 ? argv[1] : L"hoyoplay";
-    if (GetFileAttributesW(dll.c_str()) == INVALID_FILE_ATTRIBUTES) {
-        wprintf(L"missing %ls\n", dll.c_str());
-        return 1;
-    }
+// Starts (if allowed) and injects one profile's launcher. Returns false on any failure.
+bool RunProfile(const std::wstring& profile, const std::wstring& ini, const std::wstring& dll) {
+    wprintf(L"[%ls]\n", profile.c_str());
     wchar_t process[MAX_PATH] = {}, start[MAX_PATH] = {}, autostart[16] = {};
     GetPrivateProfileStringW(profile.c_str(), L"process", L"", process, MAX_PATH, ini.c_str());
     GetPrivateProfileStringW(profile.c_str(), L"start", L"", start, MAX_PATH, ini.c_str());
     GetPrivateProfileStringW(profile.c_str(), L"autostart", L"no", autostart, ARRAYSIZE(autostart), ini.c_str());
     if (!*process) {
-        wprintf(L"profile [%ls] has no process= in %ls\n", profile.c_str(), ini.c_str());
-        return 1;
+        wprintf(L"  no process= for [%ls] in %ls\n", profile.c_str(), ini.c_str());
+        return false;
     }
 
     auto pids = FindProcesses(process);
     if (pids.empty()) {
         // An elevated injector would start the launcher elevated too; only allowed where the launcher is elevated anyway.
         if (_wcsicmp(autostart, L"yes") != 0) {
-            wprintf(L"%ls is not running. Start it normally, then run this again.\n", process);
-            return 1;
+            wprintf(L"  %ls is not running. Start it normally, then run this again.\n", process);
+            return false;
         }
         // An empty or wrong path would make ShellExecute open the working directory (System32) instead.
         const DWORD attr = GetFileAttributesW(start);
         if (!*start || attr == INVALID_FILE_ATTRIBUTES || (attr & FILE_ATTRIBUTE_DIRECTORY)) {
-            wprintf(L"start= in [%ls] is not a file: \"%ls\". Set it to the launcher exe in %ls\n", profile.c_str(), start, ini.c_str());
-            return 1;
+            wprintf(L"  start= in [%ls] is not a file: \"%ls\". Set it to the launcher exe in %ls\n", profile.c_str(), start, ini.c_str());
+            return false;
         }
-        wprintf(L"%ls not running, starting %ls\n", process, start);
+        wprintf(L"  %ls not running, starting %ls\n", process, start);
         if (reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open", start, nullptr, nullptr, SW_SHOWNORMAL)) <= 32) {
-            wprintf(L"failed to start the launcher\n");
-            return 1;
+            wprintf(L"  failed to start the launcher\n");
+            return false;
         }
         for (int i = 0; i < 120 && pids.empty(); ++i) {
             Sleep(500);
             pids = FindProcesses(process);
         }
         if (pids.empty()) {
-            wprintf(L"%ls did not appear within 60 s\n", process);
-            return 1;
+            wprintf(L"  %ls did not appear within 60 s\n", process);
+            return false;
         }
     }
 
-    int failures = 0;
+    bool ok = true;
     for (DWORD pid : pids) {
         if (HasModule(pid, L"multilink.dll")) {
             wprintf(L"  pid %lu already has multilink.dll\n", pid);
             continue;
         }
-        if (!Inject(pid, dll)) ++failures;
+        ok = Inject(pid, dll) && ok;
     }
+    return ok;
+}
+
+}  // namespace
+
+// Usage: multilink_inject.exe            every profile in multilink.ini with enabled=yes
+//        multilink_inject.exe <profile>  just that profile, even if it is disabled
+int wmain(int argc, wchar_t** argv) {
+    const std::wstring dir = ExeDir();
+    const std::wstring dll = dir + L"multilink.dll";
+    const std::wstring ini = dir + L"multilink.ini";
+    if (GetFileAttributesW(dll.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        wprintf(L"missing %ls\n", dll.c_str());
+        return 1;
+    }
+
+    std::vector<std::wstring> profiles;
+    if (argc > 1) {
+        profiles.push_back(argv[1]);
+    } else {
+        wchar_t sections[4096] = {};
+        GetPrivateProfileSectionNamesW(sections, ARRAYSIZE(sections), ini.c_str());
+        for (const wchar_t* s = sections; *s; s += wcslen(s) + 1) {
+            wchar_t enabled[16] = {};
+            GetPrivateProfileStringW(s, L"enabled", L"no", enabled, ARRAYSIZE(enabled), ini.c_str());
+            if (_wcsicmp(s, L"multilink") == 0) continue;
+            if (_wcsicmp(enabled, L"yes") == 0) profiles.push_back(s);
+            else wprintf(L"[%ls] disabled (enabled=no), skipped\n", s);
+        }
+        if (profiles.empty()) wprintf(L"no profile has enabled=yes in %ls\n", ini.c_str());
+    }
+
+    int failures = 0;
+    for (const auto& p : profiles) failures += RunProfile(p, ini, dll) ? 0 : 1;
     wprintf(L"done, log: %lsmultilink.log\n", dir.c_str());
+
+    DWORD ids[2];
+    if (GetConsoleProcessList(ids, 2) == 1) {  // our own console (double-clicked): keep it open to be read
+        wprintf(L"Press Enter to close.");
+        (void)getwchar();
+    }
     return failures ? 1 : 0;
 }
