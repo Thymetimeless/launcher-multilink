@@ -1,0 +1,8 @@
+bin/
+obj/
+*.log
+tools/speedtest/node_modules/
+tools/speedtest/dist/
+tools/speedtest/plexo/
+tools/hoyo-links/links.txt
+tools/hoyo-links/md5.txt

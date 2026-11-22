@@ -1,0 +1,12 @@
+{
+  "name": "plexo-speedtest",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild speedtest.ts --bundle --platform=node --target=node20 --format=esm --alias:electron=./electron-stub.js --outfile=dist/speedtest.mjs",
+    "speedtest": "node dist/speedtest.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.11"
+  }
+}
