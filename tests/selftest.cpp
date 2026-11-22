@@ -26,5 +26,10 @@ int main() {
     using multilink::IsOn;
     assert(IsOn(L"1") && IsOn(L"true") && IsOn(L"TRUE") && IsOn(L" True "));
     assert(!IsOn(L"0") && !IsOn(L"false") && !IsOn(L"") && !IsOn(L"yes") && !IsOn(L"10") && !IsOn(L"truex"));
+    using multilink::PortInList;
+    assert(PortInList(443, L"") && PortInList(27018, L"  "));
+    assert(PortInList(80, L"80,443") && PortInList(443, L" 80 , 443 ") && !PortInList(27018, L"80,443"));
+    assert(PortInList(27020, L"27015-27050") && !PortInList(27051, L"27015-27050") && PortInList(27015, L"27015-27050"));
+    assert(!PortInList(80, L"abc") && !PortInList(80, L"90-70") && !PortInList(80, L"99999"));
     std::puts("selftest ok");
 }

@@ -55,6 +55,40 @@ inline bool IsOn(std::wstring_view v) {
     return true;
 }
 
+// True when `port` is in a list like "80,443,8000-8080". An empty list matches every port; an
+// unparsable item matches nothing.
+inline bool PortInList(uint16_t port, std::wstring_view list) {
+    bool any = false;
+    size_t start = 0;
+    while (start <= list.size()) {
+        size_t end = list.find(L',', start);
+        if (end == std::wstring_view::npos) end = list.size();
+        std::wstring_view item = list.substr(start, end - start);
+        start = end + 1;
+        const size_t b = item.find_first_not_of(L" \t"), e = item.find_last_not_of(L" \t");
+        if (b == std::wstring_view::npos) continue;
+        item = item.substr(b, e - b + 1);
+        any = true;
+        auto num = [](std::wstring_view s, uint32_t& out) {
+            if (s.empty() || s.size() > 5) return false;
+            out = 0;
+            for (wchar_t c : s) {
+                if (c < L'0' || c > L'9') return false;
+                out = out * 10 + (c - L'0');
+            }
+            return out <= 65535;
+        };
+        uint32_t lo = 0, hi = 0;
+        const size_t dash = item.find(L'-');
+        if (dash == std::wstring_view::npos) {
+            if (num(item, lo) && port == lo) return true;
+        } else if (num(item.substr(0, dash), lo) && num(item.substr(dash + 1), hi) && lo <= port && port <= hi) {
+            return true;
+        }
+    }
+    return !any;
+}
+
 // "Ethernet, Wi-Fi" -> {"Ethernet", "Wi-Fi"}; empty items dropped.
 inline std::vector<std::wstring> SplitList(const std::wstring& s) {
     std::vector<std::wstring> out;

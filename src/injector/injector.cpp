@@ -133,9 +133,10 @@ bool WaitHooksReady(DWORD pid, DWORD timeoutMs) {
     return false;
 }
 
-// Drops the process's open IPv4 connections to public addresses, so the launcher reconnects
-// through the hooks instead of reusing sockets opened before the injection. Needs admin.
-int ResetConnections(DWORD pid) {
+// Drops the process's open IPv4 connections to public addresses on `ports` (empty = any), so the
+// launcher reconnects through the hooks instead of reusing sockets opened before the injection.
+// Needs admin.
+int ResetConnections(DWORD pid, const std::wstring& ports) {
     ULONG size = 0;
     GetExtendedTcpTable(nullptr, &size, FALSE, AF_INET, TCP_TABLE_OWNER_PID_CONNECTIONS, 0);
     std::vector<BYTE> buf(size + 4096);
@@ -147,6 +148,7 @@ int ResetConnections(DWORD pid) {
         const MIB_TCPROW_OWNER_PID& r = table->table[i];
         if (r.dwOwningPid != pid || r.dwState != MIB_TCP_STATE_ESTAB) continue;
         if (!multilink::IsPublicIPv4(_byteswap_ulong(r.dwRemoteAddr))) continue;
+        if (!multilink::PortInList(_byteswap_ushort(static_cast<uint16_t>(r.dwRemotePort)), ports)) continue;
         MIB_TCPROW row{};
         row.dwState = MIB_TCP_STATE_DELETE_TCB;
         row.dwLocalAddr = r.dwLocalAddr;
@@ -196,6 +198,8 @@ bool RunProfile(const std::wstring& profile, const std::wstring& ini, const std:
     GetPrivateProfileStringW(profile.c_str(), L"start", L"", start, MAX_PATH, ini.c_str());
     GetPrivateProfileStringW(profile.c_str(), L"autostart", L"0", autostart, ARRAYSIZE(autostart), ini.c_str());
     GetPrivateProfileStringW(profile.c_str(), L"late", L"reset", late, ARRAYSIZE(late), ini.c_str());
+    wchar_t resetPorts[256] = {};
+    GetPrivateProfileStringW(profile.c_str(), L"reset_ports", L"", resetPorts, ARRAYSIZE(resetPorts), ini.c_str());
     if (!*process) {
         wprintf(L"  no process= for [%ls] in %ls\n", profile.c_str(), ini.c_str());
         return false;
@@ -265,7 +269,7 @@ bool RunProfile(const std::wstring& profile, const std::wstring& ini, const std:
             wprintf(L"  hooks not reported ready within 15 s (see the log); open connections left as they are\n");
             continue;
         }
-        const int n = ResetConnections(pid);
+        const int n = ResetConnections(pid, resetPorts);
         if (n < 0) wprintf(L"  could not read the TCP table, open connections left as they are\n");
         else wprintf(L"  reset %d open connection(s) so they reconnect through every link\n", n);
     }

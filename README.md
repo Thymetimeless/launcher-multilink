@@ -7,7 +7,7 @@ from inside the game launcher itself. No proxy, no VPN, no server.
 |---|---|---|
 | HoYoPlay 1.18.0.380 | Honkai: Star Rail, Genshin Impact, Zenless Zone Zero, Honkai Impact 3rd | Measured with Star Rail 4.7.0: 98.6 → 138 Mbit/s with three links |
 | Kuro launcher 3.1.0.1 (`launcher_main.exe`) | Wuthering Waves, including the Steam release (it updates through this launcher, not Steam) | Measured with the 3.8.0 update: Ethernet alone ~98 → 117-119 Mbit/s with LAN + Wi-Fi |
-| Steam (steamclient64 11.23.65.88) | Games Steam itself downloads | Injection and patch verified. Download speed not measured yet |
+| Steam (steamclient64 11.23.65.88) | Games Steam itself downloads | Measured with Mecha Break: Ethernet alone 94.4 Mbit/s → 119-120 Mbit/s with LAN + Wi-Fi, injected after Pause, Steam stays online |
 
 All HoYoPlay games use the same download engine (`sophon.dll`), so they get the same treatment.
 Only Star Rail was measured.
@@ -69,7 +69,9 @@ later builds leave your edits alone. Your `multilink.ini` isn't committed.
      happens next depends on `late=` in the profile:
      - `late=reset` (default): inject, wait for the DLL to report its hooks are live, then drop
        the launcher's open IPv4 connections to public addresses. It reconnects through the hook
-       when you resume.
+       when you resume. `reset_ports=` limits which remote ports are dropped. Steam uses
+       `reset_ports=80,443`, because dropping its Steam-network connection (TCP 27015-27050) puts
+       it in offline mode and the download can't resume.
      - `late=restart` (HoYoPlay): sophon fixes HTTP/2 at start-up, so the injector closes
        HoYoPlay (and its child processes), starts it again and injects. The paused progress is
        kept: click Restore Download.
