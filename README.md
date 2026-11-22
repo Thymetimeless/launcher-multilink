@@ -6,7 +6,8 @@ from inside the game launcher itself. No proxy, no VPN, no server.
 | Launcher | Games | Status |
 |---|---|---|
 | HoYoPlay 1.18.0.380 | Honkai: Star Rail, Genshin Impact, Zenless Zone Zero, Honkai Impact 3rd | Measured with Star Rail 4.7.0: 98.6 → 138 Mbit/s with three links |
-| Steam (steamclient64 11.23.65.88) | Steam games, including the Steam release of Wuthering Waves | Injection and patch verified. Download speed not measured yet |
+| Kuro launcher 3.1.0.1 (`launcher_main.exe`) | Wuthering Waves, including the Steam release (it updates through this launcher, not Steam) | Measured with the 3.8.0 update: Ethernet alone ~98 → 117-119 Mbit/s with LAN + Wi-Fi |
+| Steam (steamclient64 11.23.65.88) | Games Steam itself downloads | Injection and patch verified. Download speed not measured yet |
 
 All HoYoPlay games use the same download engine (`sophon.dll`), so they get the same treatment.
 Only Star Rail was measured.
@@ -27,6 +28,13 @@ Only Star Rail was measured.
    `"enable_http2": true` to `false` in the init JSON. sophon then uses HTTP/1.1 with many
    parallel connections. The hook only installs when the function prologue matches build
    1.18.0.380; on any other build it logs that and leaves HTTP/2 alone.
+4. **`hook=inline` (Wuthering Waves): patches `ws2_32!bind` itself.** The Kuro launcher downloads
+   with .NET `HttpClient`, which reaches Winsock through P/Invoke rather than an import table. The
+   DLL replaces the first 5 bytes of `bind` with a jump to a stub next to ws2_32 and keeps a
+   trampoline for the original. .NET binds every socket to "any" before `ConnectEx`, so the hook
+   picks the adapter there, including the dual-mode IPv6 sockets .NET uses, which get an
+   IPv4-mapped address (`::ffff:a.b.c.d`). This applies to the whole launcher process. It only
+   installs when `bind` starts with the bytes measured on ws2_32 10.0.26100.1.
 
 This adds speed only when **each link has its own bottleneck**: different ISPs, a phone on mobile
 data, or separately authenticated sessions on a network that caps each one. Wi-Fi and Ethernet

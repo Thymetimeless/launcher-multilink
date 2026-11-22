@@ -7,6 +7,7 @@
 #include <iphlpapi.h>
 #include <windows.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdarg>
 #include <cstdio>
@@ -71,8 +72,34 @@ bool IsUnbound(SOCKET s) {
     return getsockname(s, reinterpret_cast<sockaddr*>(&ss), &len) == SOCKET_ERROR && WSAGetLastError() == WSAEINVAL;
 }
 
+bool IsDualMode(SOCKET s) {
+    DWORD v6only = 1;
+    int len = sizeof v6only;
+    return getsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY, reinterpret_cast<char*>(&v6only), &len) == 0 && v6only == 0;
+}
+
 // bind(ANY:0) precedes ConnectEx-style connects; substitute a concrete adapter address.
 int WSAAPI HookBind(SOCKET s, const sockaddr* name, int len) {
+    // .NET sockets are dual-mode IPv6 bound to [::]:0; an IPv4-mapped source keeps them on that adapter.
+    // shortcut: such a socket can then only reach IPv4 peers; .NET falls back to its next address on failure.
+    if (name && len >= static_cast<int>(sizeof(sockaddr_in6)) && name->sa_family == AF_INET6) {
+        const auto* in6 = reinterpret_cast<const sockaddr_in6*>(name);
+        if (IN6_IS_ADDR_UNSPECIFIED(&in6->sin6_addr) && in6->sin6_port == 0 && IsTcp(s) && IsDualMode(s)) {
+            const size_t i = PickSource();
+            sockaddr_in6 local = *in6;
+            memset(&local.sin6_addr, 0, sizeof local.sin6_addr);
+            local.sin6_addr.u.Byte[10] = local.sin6_addr.u.Byte[11] = 0xFF;
+            memcpy(&local.sin6_addr.u.Byte[12], &g_sources[i], 4);
+            if (g_realBind(s, reinterpret_cast<const sockaddr*>(&local), sizeof local) == 0) {
+                ++(*g_perSource)[i];
+                Log("bind6 sock=%llu src=::ffff:%s (%ls)", static_cast<unsigned long long>(s), Ip(g_sources[i]).c_str(),
+                    g_sourceNames[i].c_str());
+                return 0;
+            }
+            Log("bind6 sock=%llu src=::ffff:%s failed err=%d, falling back to ANY", static_cast<unsigned long long>(s),
+                Ip(g_sources[i]).c_str(), WSAGetLastError());
+        }
+    }
     if (name && len >= static_cast<int>(sizeof(sockaddr_in)) && name->sa_family == AF_INET) {
         const auto* in = reinterpret_cast<const sockaddr_in*>(name);
         if (in->sin_addr.s_addr == INADDR_ANY && in->sin_port == 0 && IsTcp(s)) {
@@ -175,7 +202,11 @@ bool ResolveSources(const std::vector<std::wstring>& wanted) {
         }
         if (!found) Log("adapter '%ls' not found", name.c_str());
     }
-    return g_sources.size() >= 2;
+    // An adapter listed several times still counts once: bonding needs two different links.
+    std::vector<uint32_t> distinct;
+    for (const in_addr& a : g_sources)
+        if (std::find(distinct.begin(), distinct.end(), a.s_addr) == distinct.end()) distinct.push_back(a.s_addr);
+    return distinct.size() >= 2;
 }
 
 // ---- Sophon_InitEnv hook: turn off HTTP/2 so sophon spreads chunks over several connections ----
@@ -277,20 +308,128 @@ VOID CALLBACK OnDllNotification(ULONG reason, const LdrDllNotificationData* data
     if (name.size() == 10 && _wcsnicmp(name.data(), L"sophon.dll", 10) == 0) HookSophonInitEnv(static_cast<BYTE*>(data->DllBase));
 }
 
-// The downloader module named by the ini profile whose process= is this exe, or "" when none is.
-std::wstring TargetModule(const std::wstring& ini) {
+// ---- hook=inline: patch ws2_32!bind itself, for downloaders that reach Winsock without an import
+// table entry (.NET's HttpClient calls it through P/Invoke) ----
+
+// First bytes of bind in ws2_32.dll 10.0.26100.1: push rbp / push rsi / push r14. Five whole
+// instructions with no RIP-relative operand, so they can run unchanged from the trampoline.
+constexpr BYTE kBindPrologue[] = {0x40, 0x55, 0x56, 0x41, 0x56};
+
+// Executable memory within +-2 GB of `anchor`, so a 5-byte rel32 jmp can reach it.
+BYTE* AllocNear(const void* anchor, size_t size) {
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    const uintptr_t gran = si.dwAllocationGranularity, origin = reinterpret_cast<uintptr_t>(anchor) & ~(gran - 1);
+    for (uintptr_t d = gran; d < 0x7FF00000; d += gran) {
+        for (const uintptr_t at : {origin - d, origin + d}) {
+            if (at < reinterpret_cast<uintptr_t>(si.lpMinimumApplicationAddress) ||
+                at > reinterpret_cast<uintptr_t>(si.lpMaximumApplicationAddress)) continue;
+            if (void* p = VirtualAlloc(reinterpret_cast<void*>(at), size, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE))
+                return static_cast<BYTE*>(p);
+        }
+    }
+    return nullptr;
+}
+
+bool InstallInlineBind() {
+    auto* fn = reinterpret_cast<BYTE*>(GetProcAddress(GetModuleHandleW(L"ws2_32.dll"), "bind"));
+    if (!fn || memcmp(fn, kBindPrologue, sizeof kBindPrologue) != 0) {
+        Log("ws2_32!bind@%p prologue differs from ws2_32 10.0.26100.1, inline hook not installed", fn);
+        return false;
+    }
+    if (reinterpret_cast<uintptr_t>(fn) % 8 != 0) {
+        Log("ws2_32!bind@%p not 8-byte aligned, inline hook not installed", fn);
+        return false;
+    }
+    BYTE* stub = AllocNear(fn, 64);
+    if (!stub) {
+        Log("no memory near ws2_32 for the bind stub, inline hook not installed");
+        return false;
+    }
+    // stub+0: jmp [rip] -> HookBind.  stub+16: original 5 bytes, then jmp [rip] -> bind+5 (the trampoline).
+    const auto hook = reinterpret_cast<uint64_t>(&HookBind), back = reinterpret_cast<uint64_t>(fn + 5);
+    const BYTE absJmp[6] = {0xFF, 0x25, 0, 0, 0, 0};
+    memcpy(stub, absJmp, 6);
+    memcpy(stub + 6, &hook, 8);
+    memcpy(stub + 16, fn, 5);
+    memcpy(stub + 21, absJmp, 6);
+    memcpy(stub + 27, &back, 8);
+    DWORD old;
+    VirtualProtect(stub, 64, PAGE_EXECUTE_READ, &old);
+    FlushInstructionCache(GetCurrentProcess(), stub, 64);
+    g_realBind = reinterpret_cast<BindFn>(stub + 16);
+
+    // One aligned 8-byte store, so another thread entering bind sees either the old or the new start.
+    const int64_t rel = stub - (fn + 5);
+    uint64_t word;
+    memcpy(&word, fn, 8);
+    BYTE* w = reinterpret_cast<BYTE*>(&word);
+    w[0] = 0xE9;
+    const auto rel32 = static_cast<int32_t>(rel);
+    memcpy(w + 1, &rel32, 4);
+    if (!VirtualProtect(fn, 8, PAGE_EXECUTE_READWRITE, &old)) {
+        Log("VirtualProtect on ws2_32!bind failed err=%lu", GetLastError());
+        return false;
+    }
+    InterlockedExchange64(reinterpret_cast<volatile LONG64*>(fn), static_cast<LONG64>(word));
+    VirtualProtect(fn, 8, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), fn, 8);
+    Log("ws2_32!bind@%p inline-hooked (stub %p): %zu round-robin slots", fn, stub, g_sources.size());
+    return true;
+}
+
+// hook=iat: point the module's bind/connect imports at our hooks.
+bool PatchModuleImports(const std::wstring& module) {
+    // shortcut: polls for the module; connections it opens before the patch use the default route.
+    HMODULE target = nullptr;
+    for (int i = 0; i < 10 * 60 * 4 && !(target = GetModuleHandleW(module.c_str())); ++i) Sleep(250);
+    if (!target) {
+        Log("%ls not loaded in this process after 10 min, giving up", module.c_str());
+        return false;
+    }
+    HMODULE pin;  // keep the module resident while its IAT points at us
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                       reinterpret_cast<LPCWSTR>(target), &pin);
+
+    void** bindSlot = FindIatSlot(target, reinterpret_cast<void*>(g_realBind));
+    void** connSlot = FindIatSlot(target, reinterpret_cast<void*>(g_realConnect));
+    if (!bindSlot || !connSlot) {
+        Log("%ls IAT slots not found (bind=%p connect=%p), nothing patched", module.c_str(), bindSlot, connSlot);
+        return false;
+    }
+    if (!WriteSlot(bindSlot, reinterpret_cast<void*>(&HookBind))) {
+        Log("patch bind failed err=%lu", GetLastError());
+        return false;
+    }
+    if (!WriteSlot(connSlot, reinterpret_cast<void*>(&HookConnect))) {
+        Log("patch connect failed err=%lu, rolling back bind", GetLastError());
+        WriteSlot(bindSlot, reinterpret_cast<void*>(g_realBind));
+        return false;
+    }
+    Log("%ls@%p patched: %zu round-robin slots", module.c_str(), target, g_sources.size());
+    return true;
+}
+
+struct Profile {
+    std::wstring module;  // module whose import table is patched (hook=iat)
+    bool inlineBind = false;
+};
+
+// The profile whose process= is this exe (empty module and no inline hook when none matches).
+Profile TargetProfile(const std::wstring& ini) {
     wchar_t self[MAX_PATH];
     const std::wstring path(self, GetModuleFileNameW(nullptr, self, MAX_PATH));
     const std::wstring exe = path.substr(path.find_last_of(L'\\') + 1);
     wchar_t sections[4096] = {};
     GetPrivateProfileSectionNamesW(sections, ARRAYSIZE(sections), ini.c_str());
     for (const wchar_t* s = sections; *s; s += wcslen(s) + 1) {
-        wchar_t process[MAX_PATH] = {}, module[MAX_PATH] = {};
+        wchar_t process[MAX_PATH] = {}, module[MAX_PATH] = {}, hook[16] = {};
         GetPrivateProfileStringW(s, L"process", L"", process, MAX_PATH, ini.c_str());
         if (_wcsicmp(process, exe.c_str()) != 0) continue;
         GetPrivateProfileStringW(s, L"module", L"", module, MAX_PATH, ini.c_str());
-        Log("profile [%ls]: process=%ls module=%ls", s, process, module);
-        return module;
+        GetPrivateProfileStringW(s, L"hook", L"iat", hook, ARRAYSIZE(hook), ini.c_str());
+        Log("profile [%ls]: process=%ls module=%ls hook=%ls", s, process, module, hook);
+        return {module, _wcsicmp(hook, L"inline") == 0};
     }
     Log("no profile in the ini has process=%ls", exe.c_str());
     return {};
@@ -301,8 +440,9 @@ DWORD WINAPI InitThread(void*) {
     wchar_t list[512] = {};
     GetPrivateProfileStringW(L"multilink", L"adapters", L"", list, ARRAYSIZE(list), ini.c_str());
     Log("pid=%lu ini=%ls adapters=%ls", GetCurrentProcessId(), ini.c_str(), list);
-    const std::wstring module = TargetModule(ini);
-    if (module.empty()) return 0;
+    const Profile profile = TargetProfile(ini);
+    const std::wstring& module = profile.module;
+    if (module.empty() && !profile.inlineBind) return 0;
 
     if (!ResolveSources(multilink::SplitList(list))) {
         Log("fewer than 2 usable adapters, nothing patched");
@@ -319,33 +459,7 @@ DWORD WINAPI InitThread(void*) {
         return 0;
     }
 
-    // shortcut: polls for the module; connections it opens before the patch use the default route.
-    HMODULE target = nullptr;
-    for (int i = 0; i < 10 * 60 * 4 && !(target = GetModuleHandleW(module.c_str())); ++i) Sleep(250);
-    if (!target) {
-        Log("%ls not loaded in this process after 10 min, giving up", module.c_str());
-        return 0;
-    }
-    HMODULE pin;  // keep the module resident while its IAT points at us
-    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
-                       reinterpret_cast<LPCWSTR>(target), &pin);
-
-    void** bindSlot = FindIatSlot(target, reinterpret_cast<void*>(g_realBind));
-    void** connSlot = FindIatSlot(target, reinterpret_cast<void*>(g_realConnect));
-    if (!bindSlot || !connSlot) {
-        Log("%ls IAT slots not found (bind=%p connect=%p), nothing patched", module.c_str(), bindSlot, connSlot);
-        return 0;
-    }
-    if (!WriteSlot(bindSlot, reinterpret_cast<void*>(&HookBind))) {
-        Log("patch bind failed err=%lu", GetLastError());
-        return 0;
-    }
-    if (!WriteSlot(connSlot, reinterpret_cast<void*>(&HookConnect))) {
-        Log("patch connect failed err=%lu, rolling back bind", GetLastError());
-        WriteSlot(bindSlot, reinterpret_cast<void*>(g_realBind));
-        return 0;
-    }
-    Log("%ls@%p patched: %zu round-robin slots", module.c_str(), target, g_sources.size());
+    if (!(profile.inlineBind ? InstallInlineBind() : PatchModuleImports(module))) return 0;
 
     for (;;) {  // per-adapter connection counters, once a minute (an adapter listed twice is summed)
         Sleep(60 * 1000);
