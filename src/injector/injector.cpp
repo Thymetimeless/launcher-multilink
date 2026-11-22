@@ -41,7 +41,10 @@ bool Inject(DWORD pid, const std::wstring& dll) {
     HANDLE proc = OpenProcess(PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION |
                                   PROCESS_VM_WRITE | PROCESS_VM_READ, FALSE, pid);
     if (!proc) {
-        wprintf(L"  OpenProcess(%lu) failed: %lu\n", pid, GetLastError());
+        const DWORD err = GetLastError();
+        wprintf(L"  OpenProcess(%lu) failed: %lu\n", pid, err);
+        if (err == ERROR_ACCESS_DENIED)
+            wprintf(L"  The launcher refused access even with SeDebugPrivilege. Close it and run this again so it starts the launcher itself.\n");
         return false;
     }
     wchar_t image[MAX_PATH] = L"?";
@@ -81,6 +84,20 @@ bool Inject(DWORD pid, const std::wstring& dll) {
     return ok;
 }
 
+// Administrators hold SeDebugPrivilege but it starts disabled. Enabled, OpenProcess ignores the
+// target's DACL, which launchers sometimes tighten after start-up (OpenProcess then fails with 5).
+void EnableDebugPrivilege() {
+    HANDLE token;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token)) return;
+    TOKEN_PRIVILEGES tp{};
+    tp.PrivilegeCount = 1;
+    tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+    const bool ok = LookupPrivilegeValueW(nullptr, SE_DEBUG_NAME, &tp.Privileges[0].Luid) &&
+                    AdjustTokenPrivileges(token, FALSE, &tp, 0, nullptr, nullptr) && GetLastError() == ERROR_SUCCESS;
+    CloseHandle(token);
+    if (!ok) wprintf(L"note: SeDebugPrivilege not available, a locked-down launcher may refuse access\n");
+}
+
 // Starts (if allowed) and injects one profile's launcher. Returns false on any failure.
 bool RunProfile(const std::wstring& profile, const std::wstring& ini, const std::wstring& dll) {
     wprintf(L"[%ls]\n", profile.c_str());
@@ -93,7 +110,10 @@ bool RunProfile(const std::wstring& profile, const std::wstring& ini, const std:
         return false;
     }
 
+    wchar_t module[MAX_PATH] = {};
+    GetPrivateProfileStringW(profile.c_str(), L"module", L"", module, MAX_PATH, ini.c_str());
     auto pids = FindProcesses(process);
+    const bool wasRunning = !pids.empty();
     if (pids.empty()) {
         // An elevated injector would start the launcher elevated too; only allowed where the launcher is elevated anyway.
         if (_wcsicmp(autostart, L"yes") != 0) {
@@ -121,14 +141,20 @@ bool RunProfile(const std::wstring& profile, const std::wstring& ini, const std:
         }
     }
 
-    bool ok = true;
+    bool ok = true, injected = false;
     for (DWORD pid : pids) {
         if (HasModule(pid, L"multilink.dll")) {
             wprintf(L"  pid %lu already has multilink.dll\n", pid);
             continue;
         }
-        ok = Inject(pid, dll) && ok;
+        const bool one = Inject(pid, dll);
+        injected |= one;
+        ok = one && ok;
     }
+    // sophon reads its HTTP/2 switch once at start-up, before a late injection can change it.
+    if (injected && wasRunning && _wcsicmp(module, L"sophon.dll") == 0)
+        wprintf(L"  NOTE: HoYoPlay was already running, so it keeps HTTP/2 and downloads over ONE link.\n"
+                L"        For all links: close HoYoPlay and run this again so it starts HoYoPlay itself.\n");
     return ok;
 }
 
@@ -145,6 +171,7 @@ int wmain(int argc, wchar_t** argv) {
         return 1;
     }
 
+    EnableDebugPrivilege();
     std::vector<std::wstring> profiles;
     if (argc > 1) {
         profiles.push_back(argv[1]);
