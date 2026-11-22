@@ -23,5 +23,8 @@ int main() {
     assert(!multilink::DisableHttp2(R"({"enable_http2":10})", out));
     assert(!multilink::DisableHttp2(R"({"other":"enable_http2"})", out));
     assert(!multilink::DisableHttp2("", out) && out.empty());
+    using multilink::IsOn;
+    assert(IsOn(L"1") && IsOn(L"true") && IsOn(L"TRUE") && IsOn(L" True "));
+    assert(!IsOn(L"0") && !IsOn(L"false") && !IsOn(L"") && !IsOn(L"yes") && !IsOn(L"10") && !IsOn(L"truex"));
     std::puts("selftest ok");
 }

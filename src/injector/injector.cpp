@@ -7,6 +7,8 @@
 #include <string>
 #include <vector>
 
+#include "../core/multilink_core.h"
+
 namespace {
 
 std::wstring ExeDir() {
@@ -87,7 +89,7 @@ bool RunProfile(const std::wstring& profile, const std::wstring& ini, const std:
     wchar_t process[MAX_PATH] = {}, start[MAX_PATH] = {}, autostart[16] = {};
     GetPrivateProfileStringW(profile.c_str(), L"process", L"", process, MAX_PATH, ini.c_str());
     GetPrivateProfileStringW(profile.c_str(), L"start", L"", start, MAX_PATH, ini.c_str());
-    GetPrivateProfileStringW(profile.c_str(), L"autostart", L"no", autostart, ARRAYSIZE(autostart), ini.c_str());
+    GetPrivateProfileStringW(profile.c_str(), L"autostart", L"0", autostart, ARRAYSIZE(autostart), ini.c_str());
     if (!*process) {
         wprintf(L"  no process= for [%ls] in %ls\n", profile.c_str(), ini.c_str());
         return false;
@@ -96,7 +98,7 @@ bool RunProfile(const std::wstring& profile, const std::wstring& ini, const std:
     auto pids = FindProcesses(process);
     if (pids.empty()) {
         // An elevated injector would start the launcher elevated too; only allowed where the launcher is elevated anyway.
-        if (_wcsicmp(autostart, L"yes") != 0) {
+        if (!multilink::IsOn(autostart)) {
             wprintf(L"  %ls is not running. Start it normally, then run this again.\n", process);
             return false;
         }
@@ -152,7 +154,7 @@ void WaitIfOwnConsole() {
 
 }  // namespace
 
-// Usage: multilink_inject.exe            every profile in multilink.ini with enabled=yes
+// Usage: multilink_inject.exe            every profile in multilink.ini with enabled=true (or 1)
 //        multilink_inject.exe <profile>  just that profile, even if it is disabled
 int wmain(int argc, wchar_t** argv) {
     // The manifest asks for elevation, but a shell can still start it without (e.g. RunAsInvoker),
@@ -179,12 +181,12 @@ int wmain(int argc, wchar_t** argv) {
         GetPrivateProfileSectionNamesW(sections, ARRAYSIZE(sections), ini.c_str());
         for (const wchar_t* s = sections; *s; s += wcslen(s) + 1) {
             wchar_t enabled[16] = {};
-            GetPrivateProfileStringW(s, L"enabled", L"no", enabled, ARRAYSIZE(enabled), ini.c_str());
+            GetPrivateProfileStringW(s, L"enabled", L"0", enabled, ARRAYSIZE(enabled), ini.c_str());
             if (_wcsicmp(s, L"multilink") == 0) continue;
-            if (_wcsicmp(enabled, L"yes") == 0) profiles.push_back(s);
-            else wprintf(L"[%ls] disabled (enabled=no), skipped\n", s);
+            if (multilink::IsOn(enabled)) profiles.push_back(s);
+            else wprintf(L"[%ls] disabled (enabled=%ls), skipped\n", s, enabled);
         }
-        if (profiles.empty()) wprintf(L"no profile has enabled=yes in %ls\n", ini.c_str());
+        if (profiles.empty()) wprintf(L"no profile has enabled=true in %ls\n", ini.c_str());
     }
 
     int failures = 0;

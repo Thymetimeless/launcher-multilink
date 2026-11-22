@@ -1,6 +1,7 @@
 #pragma once
 // Pure helpers shared by the DLL and the self-test (no Winsock state).
 #include <cstdint>
+#include <cwctype>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -40,6 +41,18 @@ inline bool DisableHttp2(std::string_view json, std::string& out) {
         }
     }
     return changed;
+}
+
+// ini switch: "1" or "true" (any case, surrounding blanks ignored) is on; anything else is off.
+inline bool IsOn(std::wstring_view v) {
+    const size_t b = v.find_first_not_of(L" \t"), e = v.find_last_not_of(L" \t");
+    if (b == std::wstring_view::npos) return false;
+    v = v.substr(b, e - b + 1);
+    if (v == L"1") return true;
+    if (v.size() != 4) return false;
+    for (size_t i = 0; i < 4; ++i)
+        if (towlower(v[i]) != L"true"[i]) return false;
+    return true;
 }
 
 // "Ethernet, Wi-Fi" -> {"Ethernet", "Wi-Fi"}; empty items dropped.

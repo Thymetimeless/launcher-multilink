@@ -51,10 +51,10 @@ build, so later builds keep your edits.
    to its speed (for example `Ethernet,Ethernet,Ethernet,Ethernet,Wi-Fi,Ethernet 5` for 90/20/20 Mbit/s).
    Set `start=` in each profile to the full path of that launcher's exe (for example
    `D:\HoYoPlay\launcher.exe`). The injector refuses to run if the path isn't an existing file.
-2. Choose launchers with `enabled=yes|no` in each profile (default: HoYoPlay on, Steam off).
+2. Choose launchers with `enabled=true|false` (or `1|0`) in each profile. `autostart=` takes the same values.
 3. Run the injector. It asks for administrator rights.
    - Double-click `multilink_inject.exe`, or run it with no arguments, to handle every profile with
-     `enabled=yes`. `multilink_inject.exe <profile>` handles just that one, even if it is disabled.
+     `enabled=true`. `multilink_inject.exe <profile>` handles just that one, even if it is disabled.
    - **HoYoPlay:** close HoYoPlay first. The injector starts it from `start=`, which it must do so
      the HTTP/2 switch catches sophon's start-up. Then click Download or Resume in HoYoPlay.
    - **Steam:** start Steam normally first. The injector won't start Steam itself, because Steam
