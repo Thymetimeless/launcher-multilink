@@ -92,6 +92,21 @@ read once, at start-up.
 | `tools/speedtest` | Speed test built on [Plexo](https://github.com/anmolkapil/plexo)'s own network layer (unmodified source, pinned commit). It measures each network alone, then all of them combined, against the HoYo CDN. Run `setup.ps1` once, then `node dist\speedtest.mjs [--streams 8] [--seconds 10] [--networks "Ethernet,Wi-Fi"]`. |
 | `tools/hoyo-links` | `get-links.ps1 -Game hkrpg\|hk4e\|nap\|bh3` writes the official full-package links from the HoYoPlay API, for use in any download manager. `verify.ps1 -Folder <dir>` checks their size and MD5. The full packages can be older than the live version, and the launcher patches the rest. |
 
+## Troubleshooting
+
+**Steam shows "offline" after injecting into a paused download.** `reset_ports=80,443` keeps
+Steam's normal network connection, but Steam sometimes still drops to offline mode. In that case,
+start Steam through the injector instead of injecting late:
+
+1. Close Steam completely (tray icon → Exit).
+2. In `multilink.ini`, set `autostart=1` under `[steam]` and check that `start=` points to your
+   `steam.exe`.
+3. Run `multilink_inject.exe steam` (or double-click it with `enabled=1` under `[steam]`). It
+   starts Steam and injects before any connection is open, so nothing needs to be reset.
+4. Resume the download in Steam.
+
+Steam started this way runs as administrator, because the injector does.
+
 ## Limits
 
 - IPv4 TCP only. QUIC/UDP and IPv6 connections use the default route.
