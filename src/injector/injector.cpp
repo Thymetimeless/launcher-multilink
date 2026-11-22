@@ -132,11 +132,37 @@ bool RunProfile(const std::wstring& profile, const std::wstring& ini, const std:
     return ok;
 }
 
+bool IsElevated() {
+    HANDLE token;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return false;
+    TOKEN_ELEVATION elevation{};
+    DWORD size = 0;
+    const bool elevated = GetTokenInformation(token, TokenElevation, &elevation, sizeof elevation, &size) && elevation.TokenIsElevated;
+    CloseHandle(token);
+    return elevated;
+}
+
+void WaitIfOwnConsole() {
+    DWORD ids[2];
+    if (GetConsoleProcessList(ids, 2) == 1) {  // our own console (double-clicked): keep it open to be read
+        wprintf(L"Press Enter to close.");
+        (void)getwchar();
+    }
+}
+
 }  // namespace
 
 // Usage: multilink_inject.exe            every profile in multilink.ini with enabled=yes
 //        multilink_inject.exe <profile>  just that profile, even if it is disabled
 int wmain(int argc, wchar_t** argv) {
+    // The manifest asks for elevation, but a shell can still start it without (e.g. RunAsInvoker),
+    // and then OpenProcess on the elevated launcher fails with 5.
+    if (!IsElevated()) {
+        wprintf(L"NOT running as administrator.\n"
+                L"Right-click multilink_inject.exe -> Run as administrator, then try again.\n");
+        WaitIfOwnConsole();
+        return 1;
+    }
     const std::wstring dir = ExeDir();
     const std::wstring dll = dir + L"multilink.dll";
     const std::wstring ini = dir + L"multilink.ini";
@@ -164,11 +190,6 @@ int wmain(int argc, wchar_t** argv) {
     int failures = 0;
     for (const auto& p : profiles) failures += RunProfile(p, ini, dll) ? 0 : 1;
     wprintf(L"done, log: %lsmultilink.log\n", dir.c_str());
-
-    DWORD ids[2];
-    if (GetConsoleProcessList(ids, 2) == 1) {  // our own console (double-clicked): keep it open to be read
-        wprintf(L"Press Enter to close.");
-        (void)getwchar();
-    }
+    WaitIfOwnConsole();
     return failures ? 1 : 0;
 }
