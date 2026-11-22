@@ -10,7 +10,7 @@ rem A running launcher may still hold the previous DLL: Windows lets a loaded DL
 del /q obj\*.old.dll >nul 2>&1
 if exist multilink.dll move /y multilink.dll obj\multilink.%RANDOM%.old.dll >nul || exit /b 1
 cl %CF% /LD src\dll\multilink_dll.cpp /Fe:multilink.dll /link /IMPLIB:obj\multilink.lib || exit /b 1
-cl %CF% src\injector\injector.cpp /Fe:multilink_inject.exe /link /MANIFESTUAC:"level='requireAdministrator'" shell32.lib advapi32.lib || exit /b 1
+cl %CF% src\injector\injector.cpp /Fe:multilink_inject.exe /link /MANIFESTUAC:"level='requireAdministrator'" shell32.lib advapi32.lib iphlpapi.lib || exit /b 1
 cl %CF% tests\selftest.cpp /Fe:obj\selftest.exe || exit /b 1
 obj\selftest.exe || exit /b 1
 rem Keep the user's edited config; only seed it on first build.

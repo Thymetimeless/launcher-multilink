@@ -64,8 +64,17 @@ later builds leave your edits alone. Your `multilink.ini` isn't committed.
 3. Run the injector. It asks for administrator rights.
    - Double-click `multilink_inject.exe`, or run it with no arguments, to handle every profile with
      `enabled=true`. `multilink_inject.exe <profile>` handles just that one, even if it is disabled.
-   - **HoYoPlay:** close HoYoPlay first. The injector starts it from `start=`, which it must do so
-     the HTTP/2 switch catches sophon's start-up. Then click Download or Resume in HoYoPlay.
+   - **Launcher already running:** the injector first measures the launcher's I/O for 3 seconds.
+     If it is downloading (≥ 1 MB/s) it refuses. Pause the download and run it again. What
+     happens next depends on `late=` in the profile:
+     - `late=reset` (default): inject, wait for the DLL to report its hooks are live, then drop
+       the launcher's open IPv4 connections to public addresses. It reconnects through the hook
+       when you resume.
+     - `late=restart` (HoYoPlay): sophon fixes HTTP/2 at start-up, so the injector closes
+       HoYoPlay (and its child processes), starts it again and injects. The paused progress is
+       kept: click Restore Download.
+   - **HoYoPlay:** if HoYoPlay is closed, the injector starts it from `start=`, so the HTTP/2
+     switch catches sophon's start-up. Then click Download or Resume in HoYoPlay.
    - **Steam:** start Steam normally first. The injector won't start Steam itself, because Steam
      would then run as administrator.
 4. Check `multilink.log`. You should see `... patched` and a per-adapter connection count every

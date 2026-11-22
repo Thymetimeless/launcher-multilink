@@ -460,6 +460,9 @@ DWORD WINAPI InitThread(void*) {
     }
 
     if (!(profile.inlineBind ? InstallInlineBind() : PatchModuleImports(module))) return 0;
+    // Tells the injector the hooks are live, so it can drop connections opened before them.
+    const std::wstring ready = L"Local\\multilink-ready-" + std::to_wstring(GetCurrentProcessId());
+    if (!CreateEventW(nullptr, TRUE, TRUE, ready.c_str())) Log("ready event failed err=%lu", GetLastError());
 
     for (;;) {  // per-adapter connection counters, once a minute (an adapter listed twice is summed)
         Sleep(60 * 1000);

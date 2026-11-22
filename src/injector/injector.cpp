@@ -1,5 +1,7 @@
-// Starts HoYoPlay if needed and loads multilink.dll into every HYP.exe process.
+// Starts launchers if needed and loads multilink.dll into them, per profile in multilink.ini.
+#include <winsock2.h>
 #include <windows.h>
+#include <iphlpapi.h>
 #include <tlhelp32.h>
 #include <shellapi.h>
 
@@ -10,6 +12,11 @@
 #include "../core/multilink_core.h"
 
 namespace {
+
+// Process I/O (disk + network) at or above this counts as "downloading". A paused launcher idles
+// far below it; the slowest link here alone moves ~2.5 MB/s.
+constexpr double kDownloadingMBps = 1.0;
+constexpr DWORD kSampleMs = 3000;
 
 std::wstring ExeDir() {
     wchar_t p[MAX_PATH];
@@ -28,6 +35,17 @@ std::vector<DWORD> FindProcesses(const wchar_t* exe) {
     return pids;
 }
 
+std::vector<DWORD> ChildProcesses(DWORD parent) {
+    std::vector<DWORD> pids;
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return pids;
+    PROCESSENTRY32W pe{sizeof pe};
+    for (BOOL ok = Process32FirstW(snap, &pe); ok; ok = Process32NextW(snap, &pe))
+        if (pe.th32ParentProcessID == parent && pe.th32ProcessID != parent) pids.push_back(pe.th32ProcessID);
+    CloseHandle(snap);
+    return pids;
+}
+
 bool HasModule(DWORD pid, const wchar_t* dll) {
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, pid);
     if (snap == INVALID_HANDLE_VALUE) return false;
@@ -37,6 +55,24 @@ bool HasModule(DWORD pid, const wchar_t* dll) {
         found = _wcsicmp(me.szModule, dll) == 0;
     CloseHandle(snap);
     return found;
+}
+
+// Bytes/s the process reads and writes (files, sockets, everything), sampled over kSampleMs. -1 if unknown.
+double IoRateMBps(DWORD pid) {
+    HANDLE proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!proc) return -1;
+    IO_COUNTERS a{}, b{};
+    double rate = -1;
+    if (GetProcessIoCounters(proc, &a)) {
+        Sleep(kSampleMs);
+        if (GetProcessIoCounters(proc, &b)) {
+            const ULONGLONG bytes = (b.ReadTransferCount - a.ReadTransferCount) + (b.WriteTransferCount - a.WriteTransferCount) +
+                                    (b.OtherTransferCount - a.OtherTransferCount);
+            rate = bytes / (kSampleMs / 1000.0) / 1e6;
+        }
+    }
+    CloseHandle(proc);
+    return rate;
 }
 
 bool Inject(DWORD pid, const std::wstring& dll) {
@@ -83,17 +119,88 @@ bool Inject(DWORD pid, const std::wstring& dll) {
     return ok;
 }
 
+// The DLL sets Local\multilink-ready-<pid> once its hooks are in place.
+bool WaitHooksReady(DWORD pid, DWORD timeoutMs) {
+    const std::wstring name = L"Local\\multilink-ready-" + std::to_wstring(pid);
+    for (DWORD waited = 0; waited <= timeoutMs; waited += 100) {
+        if (HANDLE ev = OpenEventW(SYNCHRONIZE, FALSE, name.c_str())) {
+            const bool set = WaitForSingleObject(ev, timeoutMs - waited) == WAIT_OBJECT_0;
+            CloseHandle(ev);
+            return set;
+        }
+        Sleep(100);
+    }
+    return false;
+}
+
+// Drops the process's open IPv4 connections to public addresses, so the launcher reconnects
+// through the hooks instead of reusing sockets opened before the injection. Needs admin.
+int ResetConnections(DWORD pid) {
+    ULONG size = 0;
+    GetExtendedTcpTable(nullptr, &size, FALSE, AF_INET, TCP_TABLE_OWNER_PID_CONNECTIONS, 0);
+    std::vector<BYTE> buf(size + 4096);
+    size = static_cast<ULONG>(buf.size());
+    if (GetExtendedTcpTable(buf.data(), &size, FALSE, AF_INET, TCP_TABLE_OWNER_PID_CONNECTIONS, 0) != NO_ERROR) return -1;
+    const auto* table = reinterpret_cast<const MIB_TCPTABLE_OWNER_PID*>(buf.data());
+    int reset = 0;
+    for (DWORD i = 0; i < table->dwNumEntries; ++i) {
+        const MIB_TCPROW_OWNER_PID& r = table->table[i];
+        if (r.dwOwningPid != pid || r.dwState != MIB_TCP_STATE_ESTAB) continue;
+        if (!multilink::IsPublicIPv4(_byteswap_ulong(r.dwRemoteAddr))) continue;
+        MIB_TCPROW row{};
+        row.dwState = MIB_TCP_STATE_DELETE_TCB;
+        row.dwLocalAddr = r.dwLocalAddr;
+        row.dwLocalPort = r.dwLocalPort;
+        row.dwRemoteAddr = r.dwRemoteAddr;
+        row.dwRemotePort = r.dwRemotePort;
+        if (SetTcpEntry(&row) == NO_ERROR) ++reset;
+    }
+    return reset;
+}
+
+bool KillWithChildren(DWORD pid) {
+    for (DWORD child : ChildProcesses(pid)) KillWithChildren(child);
+    HANDLE proc = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pid);
+    if (!proc) return GetLastError() == ERROR_INVALID_PARAMETER;  // already gone
+    const bool ok = TerminateProcess(proc, 0) && WaitForSingleObject(proc, 10000) == WAIT_OBJECT_0;
+    CloseHandle(proc);
+    return ok;
+}
+
+bool StartLauncher(const wchar_t* process, const wchar_t* start, const std::wstring& profile, const std::wstring& ini,
+                   std::vector<DWORD>& pids) {
+    // An empty or wrong path would make ShellExecute open the working directory (System32) instead.
+    const DWORD attr = GetFileAttributesW(start);
+    if (!*start || attr == INVALID_FILE_ATTRIBUTES || (attr & FILE_ATTRIBUTE_DIRECTORY)) {
+        wprintf(L"  start= in [%ls] is not a file: \"%ls\". Set it to the launcher exe in %ls\n", profile.c_str(), start, ini.c_str());
+        return false;
+    }
+    wprintf(L"  starting %ls\n", start);
+    if (reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open", start, nullptr, nullptr, SW_SHOWNORMAL)) <= 32) {
+        wprintf(L"  failed to start the launcher\n");
+        return false;
+    }
+    for (int i = 0; i < 120 && pids.empty(); ++i) {
+        Sleep(500);
+        pids = FindProcesses(process);
+    }
+    if (pids.empty()) wprintf(L"  %ls did not appear within 60 s\n", process);
+    return !pids.empty();
+}
+
 // Starts (if allowed) and injects one profile's launcher. Returns false on any failure.
 bool RunProfile(const std::wstring& profile, const std::wstring& ini, const std::wstring& dll) {
     wprintf(L"[%ls]\n", profile.c_str());
-    wchar_t process[MAX_PATH] = {}, start[MAX_PATH] = {}, autostart[16] = {};
+    wchar_t process[MAX_PATH] = {}, start[MAX_PATH] = {}, autostart[16] = {}, late[16] = {};
     GetPrivateProfileStringW(profile.c_str(), L"process", L"", process, MAX_PATH, ini.c_str());
     GetPrivateProfileStringW(profile.c_str(), L"start", L"", start, MAX_PATH, ini.c_str());
     GetPrivateProfileStringW(profile.c_str(), L"autostart", L"0", autostart, ARRAYSIZE(autostart), ini.c_str());
+    GetPrivateProfileStringW(profile.c_str(), L"late", L"reset", late, ARRAYSIZE(late), ini.c_str());
     if (!*process) {
         wprintf(L"  no process= for [%ls] in %ls\n", profile.c_str(), ini.c_str());
         return false;
     }
+    const bool restartLate = _wcsicmp(late, L"restart") == 0;
 
     auto pids = FindProcesses(process);
     if (pids.empty()) {
@@ -102,35 +209,67 @@ bool RunProfile(const std::wstring& profile, const std::wstring& ini, const std:
             wprintf(L"  %ls is not running. Start it normally, then run this again.\n", process);
             return false;
         }
-        // An empty or wrong path would make ShellExecute open the working directory (System32) instead.
-        const DWORD attr = GetFileAttributesW(start);
-        if (!*start || attr == INVALID_FILE_ATTRIBUTES || (attr & FILE_ATTRIBUTE_DIRECTORY)) {
-            wprintf(L"  start= in [%ls] is not a file: \"%ls\". Set it to the launcher exe in %ls\n", profile.c_str(), start, ini.c_str());
-            return false;
-        }
-        wprintf(L"  %ls not running, starting %ls\n", process, start);
-        if (reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open", start, nullptr, nullptr, SW_SHOWNORMAL)) <= 32) {
-            wprintf(L"  failed to start the launcher\n");
-            return false;
-        }
-        for (int i = 0; i < 120 && pids.empty(); ++i) {
-            Sleep(500);
-            pids = FindProcesses(process);
-        }
-        if (pids.empty()) {
-            wprintf(L"  %ls did not appear within 60 s\n", process);
-            return false;
-        }
+        wprintf(L"  %ls not running\n", process);
+        if (!StartLauncher(process, start, profile, ini, pids)) return false;
+        bool ok = true;
+        for (DWORD pid : pids) ok = Inject(pid, dll) && ok;
+        return ok;
     }
 
-    bool ok = true;
+    // Already running: refuse while it downloads, otherwise make the late injection count.
+    std::vector<DWORD> todo;
     for (DWORD pid : pids) {
         if (HasModule(pid, L"multilink.dll")) {
             wprintf(L"  pid %lu already has multilink.dll\n", pid);
             continue;
         }
-        ok = Inject(pid, dll) && ok;
+        wprintf(L"  pid %lu: checking for an active download (%lu s)...\n", pid, kSampleMs / 1000);
+        const double rate = IoRateMBps(pid);
+        if (rate >= kDownloadingMBps) {
+            wprintf(L"  pid %lu is downloading (%.1f MB/s of I/O). Pause the download in the launcher, then run this again.\n", pid, rate);
+            return false;
+        }
+        if (rate < 0) wprintf(L"  pid %lu: could not read its I/O counters, assuming it is idle\n", pid);
+        todo.push_back(pid);
     }
+    if (todo.empty()) return true;
+
+    if (restartLate) {
+        // HoYoPlay fixes HTTP/2 at start-up; only a fresh start lets the hook turn it off. Paused
+        // progress is kept on disk and resumes from there.
+        if (!multilink::IsOn(autostart)) {
+            wprintf(L"  late=restart needs autostart=1 in [%ls]\n", profile.c_str());
+            return false;
+        }
+        wprintf(L"  %ls is idle: restarting it so the download can use every link (progress is kept)\n", process);
+        for (DWORD pid : todo)
+            if (!KillWithChildren(pid)) {
+                wprintf(L"  could not close pid %lu (%lu)\n", pid, GetLastError());
+                return false;
+            }
+        pids.clear();
+        if (!StartLauncher(process, start, profile, ini, pids)) return false;
+        bool ok = true;
+        for (DWORD pid : pids) ok = Inject(pid, dll) && ok;
+        if (ok) wprintf(L"  resume the download in the launcher\n");
+        return ok;
+    }
+
+    bool ok = true;
+    for (DWORD pid : todo) {
+        if (!Inject(pid, dll)) {
+            ok = false;
+            continue;
+        }
+        if (!WaitHooksReady(pid, 15000)) {
+            wprintf(L"  hooks not reported ready within 15 s (see the log); open connections left as they are\n");
+            continue;
+        }
+        const int n = ResetConnections(pid);
+        if (n < 0) wprintf(L"  could not read the TCP table, open connections left as they are\n");
+        else wprintf(L"  reset %d open connection(s) so they reconnect through every link\n", n);
+    }
+    if (ok) wprintf(L"  resume the download in the launcher\n");
     return ok;
 }
 
