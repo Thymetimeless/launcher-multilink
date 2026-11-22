@@ -81,31 +81,6 @@ bool Inject(DWORD pid, const std::wstring& dll) {
     return ok;
 }
 
-std::wstring RegString(HKEY root, const wchar_t* key, const wchar_t* value) {
-    wchar_t buf[MAX_PATH] = {};
-    DWORD size = sizeof buf;
-    if (RegGetValueW(root, key, value, RRF_RT_REG_SZ, nullptr, buf, &size) != ERROR_SUCCESS) return {};
-    return buf;
-}
-
-// Launcher path from the registry when the ini leaves start= empty.
-std::wstring DetectStart(const std::wstring& profile) {
-    if (_wcsicmp(profile.c_str(), L"steam") == 0) return RegString(HKEY_CURRENT_USER, L"Software\\Valve\\Steam", L"SteamExe");
-    if (_wcsicmp(profile.c_str(), L"hoyoplay") != 0) return {};
-    const wchar_t* uninstall = L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall";
-    HKEY key;
-    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, uninstall, 0, KEY_READ, &key) != ERROR_SUCCESS) return {};
-    std::wstring found;
-    wchar_t name[256];
-    for (DWORD i = 0, len = ARRAYSIZE(name); found.empty() && RegEnumKeyExW(key, i, name, &len, nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS; ++i, len = ARRAYSIZE(name)) {
-        if (wcsncmp(name, L"HYP_", 4) != 0) continue;  // HYP_1_1_global, HYP_1_0_cn, ...
-        const std::wstring dir = RegString(key, name, L"InstallLocation");
-        if (!dir.empty()) found = dir + L"\\launcher.exe";
-    }
-    RegCloseKey(key);
-    return found;
-}
-
 }  // namespace
 
 // Usage: multilink_inject.exe [profile]   (profile = a section of multilink.ini, default "hoyoplay")
@@ -134,13 +109,14 @@ int wmain(int argc, wchar_t** argv) {
             wprintf(L"%ls is not running. Start it normally, then run this again.\n", process);
             return 1;
         }
-        const std::wstring launcher = *start ? std::wstring(start) : DetectStart(profile);
-        if (launcher.empty()) {
-            wprintf(L"%ls not running and no launcher found (set start= in [%ls])\n", process, profile.c_str());
+        // An empty or wrong path would make ShellExecute open the working directory (System32) instead.
+        const DWORD attr = GetFileAttributesW(start);
+        if (!*start || attr == INVALID_FILE_ATTRIBUTES || (attr & FILE_ATTRIBUTE_DIRECTORY)) {
+            wprintf(L"start= in [%ls] is not a file: \"%ls\". Set it to the launcher exe in %ls\n", profile.c_str(), start, ini.c_str());
             return 1;
         }
-        wprintf(L"%ls not running, starting %ls\n", process, launcher.c_str());
-        if (reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open", launcher.c_str(), nullptr, nullptr, SW_SHOWNORMAL)) <= 32) {
+        wprintf(L"%ls not running, starting %ls\n", process, start);
+        if (reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open", start, nullptr, nullptr, SW_SHOWNORMAL)) <= 32) {
             wprintf(L"failed to start the launcher\n");
             return 1;
         }

@@ -49,6 +49,8 @@ build, so later builds keep your edits.
 1. Edit `bin\multilink.ini`. Set `adapters=` to your adapter names from `Get-NetAdapter`. Each
    adapter needs its own IPv4 default gateway. Repeat an adapter to give it a bigger share, matched
    to its speed (for example `Ethernet,Ethernet,Ethernet,Ethernet,Wi-Fi,Ethernet 5` for 90/20/20 Mbit/s).
+   Set `start=` in each profile to the full path of that launcher's exe (for example
+   `D:\HoYoPlay\launcher.exe`). The injector refuses to run if the path isn't an existing file.
 2. Run the injector. It asks for administrator rights.
    - **HoYoPlay:** close HoYoPlay, then run `multilink_inject.exe hoyoplay`. It starts HoYoPlay
      itself, which it must do so the HTTP/2 switch catches sophon's start-up. Then click Download

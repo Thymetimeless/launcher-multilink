@@ -7,7 +7,7 @@ if not exist obj mkdir obj
 set CF=/nologo /std:c++20 /O2 /MT /EHsc /W4 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /Foobj\
 
 cl %CF% /LD src\dll\multilink_dll.cpp /Fe:bin\multilink.dll || exit /b 1
-cl %CF% src\injector\injector.cpp /Fe:bin\multilink_inject.exe /link /MANIFESTUAC:"level='requireAdministrator'" shell32.lib advapi32.lib || exit /b 1
+cl %CF% src\injector\injector.cpp /Fe:bin\multilink_inject.exe /link /MANIFESTUAC:"level='requireAdministrator'" shell32.lib || exit /b 1
 cl %CF% tests\selftest.cpp /Fe:obj\selftest.exe || exit /b 1
 obj\selftest.exe || exit /b 1
 rem Keep the user's edited config; only seed it on first build.
