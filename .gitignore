@@ -1,3 +1,7 @@
+# build output and the user's own config live in the project root next to each other
+/multilink.dll
+/multilink_inject.exe
+/multilink.ini
 bin/
 obj/
 *.log

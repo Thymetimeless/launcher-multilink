@@ -40,13 +40,14 @@ Visual Studio 2022 (MSVC, x64, C++20). No other dependencies.
 build.bat
 ```
 
-Output goes to `bin\` (`multilink.dll`, `multilink_inject.exe`, `multilink.ini`). The build also
-runs the unit tests in `tests\selftest.cpp`. `bin\multilink.ini` is only created on the first
-build, so later builds keep your edits.
+`multilink.dll` and `multilink_inject.exe` are written to the project folder, next to
+`multilink.ini`. That's the folder you run from. The build also runs the unit tests in
+`tests\selftest.cpp`. On the first build `multilink.ini` is copied from `multilink.example.ini`;
+later builds leave your edits alone. Your `multilink.ini` isn't committed.
 
 ## Use
 
-1. Edit `bin\multilink.ini`. Set `adapters=` to your adapter names from `Get-NetAdapter`. Each
+1. Edit `multilink.ini`. Set `adapters=` to your adapter names from `Get-NetAdapter`. Each
    adapter needs its own IPv4 default gateway. Repeat an adapter to give it a bigger share, matched
    to its speed (for example `Ethernet,Ethernet,Ethernet,Ethernet,Wi-Fi,Ethernet 5` for 90/20/20 Mbit/s).
    Set `start=` in each profile to the full path of that launcher's exe (for example
@@ -59,7 +60,7 @@ build, so later builds keep your edits.
      the HTTP/2 switch catches sophon's start-up. Then click Download or Resume in HoYoPlay.
    - **Steam:** start Steam normally first. The injector won't start Steam itself, because Steam
      would then run as administrator.
-4. Check `bin\multilink.log`. You should see `... patched` and a per-adapter connection count every
+4. Check `multilink.log`. You should see `... patched` and a per-adapter connection count every
    minute. Task Manager → Performance shows the traffic on each adapter.
 
 Run the injector again whenever the launcher restarts or an adapter's IP changes. Adapter IPs are
