@@ -59,7 +59,7 @@ build, so later builds keep your edits.
      the HTTP/2 switch catches sophon's start-up. Then click Download or Resume in HoYoPlay.
    - **Steam:** start Steam normally first. The injector won't start Steam itself, because Steam
      would then run as administrator.
-3. Check `bin\multilink.log`. You should see `... patched` and a per-adapter connection count every
+4. Check `bin\multilink.log`. You should see `... patched` and a per-adapter connection count every
    minute. Task Manager → Performance shows the traffic on each adapter.
 
 Run the injector again whenever the launcher restarts or an adapter's IP changes. Adapter IPs are
