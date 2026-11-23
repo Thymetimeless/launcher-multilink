@@ -25,6 +25,13 @@ gave about 0% gain in testing.
 
 ## Quick start
 
+**Prebuilt:** download `launcher-multilink-<version>-win-x64.zip` from the
+[Releases](https://github.com/Thymetimeless/launcher-multilink/releases) page, check its SHA-256 against
+the value on that page, unpack it to a folder you can write to, then continue at step 3. The zip
+already holds a `multilink.ini` with every launcher disabled.
+
+**From source:**
+
 1. Get the code: `git clone` this repository, or use "Code, Download ZIP" on GitHub and unpack it.
    Only `multilink.example.ini` is in the repository; your own `multilink.ini` is created in step 2.
 2. Open a normal (non-administrator) Command Prompt in the project folder and run `build.bat`.
@@ -228,8 +235,9 @@ The log is appended to and never rotated; delete it when it gets large.
   connections (`late=reset`). Downloads should be paused first; the injector refuses otherwise.
 - Nothing is uploaded anywhere. The only files it writes are `multilink.log` and the build output
   (plus `tools\speedtest\plexo`, `node_modules` and `dist` if you run the speed test).
-- There are no prebuilt binaries. Build from source, and read `src/injector/injector.cpp` first: it is
-  the code that runs as administrator.
+- Prebuilt binaries on the Releases page are built with `build.bat` from the tagged commit. If you
+  prefer, build from source yourself and read `src/injector/injector.cpp` first: it is the code that
+  runs as administrator.
 - Antivirus software may flag DLL injection, because that is what this does. A launcher with its own
   anti-tamper protection may also object to a foreign DLL.
 - The speed test clones Plexo from GitHub and downloads test data from the HoYo CDN.
@@ -312,4 +320,5 @@ the live version; the launcher patches the rest.
 
 ## License
 
-No license has been chosen yet.
+MIT, see [LICENSE](LICENSE). The speed test downloads [Plexo](https://github.com/anmolkapil/plexo)
+(MIT) at build time; its source is not included in this repository.
